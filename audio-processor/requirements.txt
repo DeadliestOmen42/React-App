@@ -1,0 +1,12 @@
+# Python Audio Processing Dependencies
+# Successfully tested with Python 3.12
+
+librosa==0.10.0          # Audio analysis & HPSS stem separation
+numpy==1.26.4            # Numerical computing
+scipy==1.11.2            # Signal processing (filters, etc.)
+soundfile==0.12.1        # WAV file I/O
+pedalboard==0.8.5        # Audio effects (optional)
+numba>=0.57.0            # JIT compilation for librosa
+
+# Installation:
+# pip install -r requirements.txt
