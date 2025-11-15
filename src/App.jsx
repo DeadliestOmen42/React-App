@@ -137,6 +137,9 @@ export default function App(){
     }
     setIsComposing(true);
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 130000); // 130s timeout
+      
       const res = await fetch('http://localhost:3000/api/compose-song', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -145,11 +148,19 @@ export default function App(){
           genre: songGenre,
           tempo: parseInt(songTempo),
           key: songKey
-        })
-      });
+        }),
+        signal: controller.signal
+      }).finally(() => clearTimeout(timeoutId));
+      
       if(!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Composition failed');
+        let errorMsg = 'Composition failed';
+        try {
+          const err = await res.json();
+          errorMsg = err.error || err.message || errorMsg;
+        } catch(e) {
+          errorMsg = `Server error (${res.status})`;
+        }
+        throw new Error(errorMsg);
       }
       const data = await res.json();
       
@@ -169,9 +180,15 @@ export default function App(){
       setHistory(h => [{ type: 'composed', genre: songGenre, tempo: songTempo, key: songKey, time: Date.now() }, ...h]);
       alert('🎵 Song generated successfully!\n\nYou can now:\n• Play and listen\n• Apply audio effects\n• Analyze and master\n• Download the track');
     } catch(err) {
-      console.error(err);
-      alert('Song generation failed: ' + err.message);
-      setCredits(c => c + 2);
+      console.error('Song generation error:', err);
+      let errorMsg = 'Song generation failed';
+      if (err.name === 'AbortError') {
+        errorMsg = 'Request timeout - song generation took too long. Please try again.';
+      } else if (err.message) {
+        errorMsg = 'Song generation failed: ' + err.message;
+      }
+      alert(errorMsg);
+      setCredits(c => c + 2); // Refund credits on failure
     } finally {
       setIsComposing(false);
     }

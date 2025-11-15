@@ -22,12 +22,41 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const PORT = process.env.PORT || 3000;
 const AUDIO_PROCESSOR_PATH = path.join(__dirname, '..', 'audio-processor', 'audio_processor.py');
 
-// Helper: Call Python audio processor
+// Process error handlers for stability
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  process.exit(0);
+});
+
+// Helper: Call Python audio processor with timeout
 async function callPythonProcessor(command, audioPath, ...args) {
   return new Promise((resolve, reject) => {
     const python = spawn('python3', [AUDIO_PROCESSOR_PATH, command, audioPath, ...args]);
     let stdout = '';
     let stderr = '';
+    let isResolved = false;
+
+    // 60 second timeout for audio processing
+    const timeout = setTimeout(() => {
+      if (!isResolved) {
+        python.kill();
+        reject(new Error('Python process timeout (60s)'));
+        isResolved = true;
+      }
+    }, 60000);
 
     python.stdout.on('data', (data) => {
       stdout += data.toString();
@@ -38,20 +67,48 @@ async function callPythonProcessor(command, audioPath, ...args) {
       console.warn('[Python stderr]', data.toString());
     });
 
+    python.on('error', (err) => {
+      clearTimeout(timeout);
+      if (!isResolved) {
+        reject(new Error(`Python spawn error: ${err.message}`));
+        isResolved = true;
+      }
+    });
+
     python.on('close', (code) => {
+      clearTimeout(timeout);
+      if (isResolved) return;
+      isResolved = true;
+
       if (code !== 0) {
-        reject(new Error(`Python process failed: ${stderr}`));
+        reject(new Error(`Python process failed (code ${code}): ${stderr}`));
       } else {
         try {
           const result = JSON.parse(stdout);
           resolve(result);
         } catch (e) {
-          reject(new Error(`Failed to parse Python output: ${stdout}`));
+          reject(new Error(`Failed to parse Python output: ${e.message}`));
         }
       }
     });
   });
 }
+
+// CORS middleware - allow any localhost origin
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && origin.match(/^http:\/\/localhost:\d+$/)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  } else {
+    res.header('Access-Control-Allow-Origin', FRONTEND_URL);
+  }
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, stripe-signature');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // Middleware: handle raw body for webhooks, JSON for others
 app.use((req, res, next) => {
@@ -352,6 +409,17 @@ app.post('/api/compose-song', async (req, res) => {
 
       let stdoutData = '';
       let stderrData = '';
+      let isResolved = false;
+
+      // 120 second timeout for song generation
+      const timeout = setTimeout(() => {
+        if (!isResolved) {
+          python.kill();
+          res.status(500).json({ error: 'Song generation timeout', message: 'Process took too long (120s)' });
+          isResolved = true;
+          resolve();
+        }
+      }, 120000);
 
       python.stdout.on('data', (data) => {
         stdoutData += data.toString();
@@ -361,7 +429,21 @@ app.post('/api/compose-song', async (req, res) => {
         stderrData += data.toString();
       });
 
+      python.on('error', (err) => {
+        clearTimeout(timeout);
+        if (!isResolved) {
+          console.error('Python spawn error:', err);
+          res.status(500).json({ error: 'Failed to start song generator', detail: err.message });
+          isResolved = true;
+          resolve();
+        }
+      });
+
       python.on('close', (code) => {
+        clearTimeout(timeout);
+        if (isResolved) return;
+        isResolved = true;
+
         try {
           if (code !== 0) {
             console.error('Song synthesis stderr:', stderrData);
@@ -376,7 +458,11 @@ app.post('/api/compose-song', async (req, res) => {
             const audioBase64 = audioData.toString('base64');
             
             // Clean up temp file
-            fs.unlinkSync(result.audio_path);
+            try {
+              fs.unlinkSync(result.audio_path);
+            } catch (unlinkErr) {
+              console.warn('Could not delete temp file:', result.audio_path, unlinkErr.message);
+            }
             
             res.json({
               success: true,
@@ -539,7 +625,49 @@ app.get('/api/subscription/:userId', async (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', stripe_configured: !!process.env.STRIPE_SECRET_KEY });
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    stripe_configured: !!process.env.STRIPE_SECRET_KEY,
+    openai_configured: !!(OPENAI_KEY && OPENAI_KEY !== 'sk_test_dummy'),
+    uptime: process.uptime()
+  });
 });
 
-app.listen(PORT, ()=> console.log('Server listening on port', PORT));
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'AI Music Studio API',
+    version: '1.0.0',
+    endpoints: [
+      '/health',
+      '/api/generate-lyrics',
+      '/api/compose-song',
+      '/api/analyze-audio',
+      '/api/studio-process',
+      '/api/stem-separation',
+      '/api/vocal-enhancement'
+    ]
+  });
+});
+
+const server = app.listen(PORT, () => {
+  console.log('==========================================');
+  console.log('🎵 AI Music Studio Server Started');
+  console.log('==========================================');
+  console.log(`Port: ${PORT}`);
+  console.log(`Frontend: ${FRONTEND_URL}`);
+  console.log(`OpenAI: ${OPENAI_KEY && OPENAI_KEY !== 'sk_test_dummy' ? '✓ Configured' : '✗ Not configured'}`);
+  console.log(`Stripe: ${process.env.STRIPE_SECRET_KEY ? '✓ Configured' : '✗ Not configured'}`);
+  console.log('==========================================');
+});
+
+// Handle server errors
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use. Please stop the other process or use a different port.`);
+    process.exit(1);
+  } else {
+    console.error('Server error:', err);
+  }
+});
