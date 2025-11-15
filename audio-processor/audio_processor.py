@@ -24,7 +24,8 @@ def analyze_audio(audio_path):
         
         # Estimate tempo (BPM)
         onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-        bpm, beats = librosa.beat.beat_track(onset_strength=onset_env, sr=sr)
+        # Use the correct parameter name for beat tracking
+        bpm, beats = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
         
         # Estimate key and chroma features
         chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
@@ -60,17 +61,17 @@ def analyze_audio(audio_path):
         acousticness = 1.0 - min(mean_spectral_centroid / 8000, 1.0)
         
         analysis_result = {
-            "bpm": round(bpm, 1),
+            "bpm": float(round(float(bpm), 1)),
             "key": f"{estimated_key} major",
-            "duration": round(duration, 2),
-            "loudness_db": round(loudness_db, 2),
-            "spectral_centroid": round(np.mean(spectral_centroid), 1),
-            "dynamic_range": round(dynamic_range, 3),
-            "danceability": round(min(danceability, 1.0), 2),
-            "acousticness": round(max(min(acousticness, 1.0), 0.0), 2),
-            "energy": round(np.mean(frame_energy), 2),
-            "sample_rate": sr,
-            "frames": len(y)
+            "duration": float(round(float(duration), 2)),
+            "loudness_db": float(round(float(loudness_db), 2)),
+            "spectral_centroid": float(round(float(np.mean(spectral_centroid)), 1)),
+            "dynamic_range": float(round(float(dynamic_range), 3)),
+            "danceability": float(round(min(danceability, 1.0), 2)),
+            "acousticness": float(round(max(min(acousticness, 1.0), 0.0), 2)),
+            "energy": float(round(float(np.mean(frame_energy)), 2)),
+            "sample_rate": int(sr),
+            "frames": int(len(y))
         }
         
         # Generate mastering recommendations
@@ -151,7 +152,9 @@ def separate_stems(audio_path, output_dir=None):
         # Further decompose harmonic part into bass/vocals using frequency separation
         # Compute STFT
         D = librosa.stft(y_harmonic)
-        freqs = librosa.fft_frequencies(sr=sr)
+        # Derive n_fft from STFT shape so frequency bins align
+        n_fft = (D.shape[0] - 1) * 2
+        freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
         
         # Separate vocals (200-4000 Hz) from bass (50-200 Hz)
         vocal_freq_mask = (freqs > 200) & (freqs < 4000)
@@ -168,27 +171,37 @@ def separate_stems(audio_path, output_dir=None):
             if not bass_freq_mask[i]:
                 D_bass[i] *= 0.1   # Attenuate non-bass frequencies
         
-        # Convert back to time domain
-        y_vocals = librosa.istft(D_vocal)
-        y_bass = librosa.istft(D_bass)
+        # Convert back to time domain (force length to match original)
+        y_vocals = librosa.istft(D_vocal, length=len(y))
+        y_bass = librosa.istft(D_bass, length=len(y))
         y_drums = y_percussive
         
         # Other = everything else (remainders)
         y_other = y - y_vocals - y_bass - y_drums
         
-        # Normalize to prevent clipping
-        max_val = max(np.abs(y_vocals).max(), np.abs(y_bass).max(), 
-                     np.abs(y_drums).max(), np.abs(y_other).max())
+        # Normalize to prevent clipping (guard empty arrays)
+        vals = []
+        for arr in (y_vocals, y_bass, y_drums, y_other):
+            try:
+                vals.append(np.abs(arr).max() if arr.size > 0 else 0.0)
+            except Exception:
+                vals.append(0.0)
+        max_val = max(vals) if vals else 0.0
         if max_val > 1.0:
-            y_vocals /= max_val * 1.05
-            y_bass /= max_val * 1.05
-            y_drums /= max_val * 1.05
-            y_other /= max_val * 1.05
+            scale = max_val * 1.05
+            if y_vocals.size > 0:
+                y_vocals /= scale
+            if y_bass.size > 0:
+                y_bass /= scale
+            if y_drums.size > 0:
+                y_drums /= scale
+            if y_other.size > 0:
+                y_other /= scale
         
         # Save stems
         base_name = Path(audio_path).stem
         stems_dir = Path(output_dir) / base_name
-        stems_dir.mkdir(exist_ok=True)
+        stems_dir.mkdir(parents=True, exist_ok=True)
         
         stems = {
             'vocals': str(stems_dir / 'vocals.wav'),
@@ -206,7 +219,10 @@ def separate_stems(audio_path, output_dir=None):
         stem_info = {}
         for stem_name, y_stem in [('vocals', y_vocals), ('drums', y_drums), 
                                    ('bass', y_bass), ('other', y_other)]:
-            rms = np.sqrt(np.mean(y_stem**2))
+            if y_stem.size == 0:
+                rms = 0.0
+            else:
+                rms = np.sqrt(np.mean(y_stem**2))
             db = 20 * np.log10(rms + 1e-8)
             stem_info[stem_name] = {
                 'path': stems[stem_name],
@@ -245,21 +261,34 @@ def apply_audio_effects(audio_path, reverb=0.2, eq_high=0.0, compression_ratio=1
             # Simple envelope-based compression
             rms_envelope = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
             
-            # Smooth envelope
-            rms_smooth = signal.savgol_filter(rms_envelope, window_length=51, polyorder=3)
-            
+            # Smooth envelope (choose window length <= envelope length and odd)
+            try:
+                wl = min(51, len(rms_envelope))
+                if wl % 2 == 0:
+                    wl -= 1
+                if wl < 3:
+                    rms_smooth = rms_envelope
+                else:
+                    poly = 3 if wl > 3 else 1
+                    rms_smooth = signal.savgol_filter(rms_envelope, window_length=wl, polyorder=poly)
+            except Exception:
+                rms_smooth = rms_envelope
+
             # Calculate compression gain
             threshold = 0.3
             comp_gain = np.ones_like(rms_smooth)
-            
+
             for i, rms in enumerate(rms_smooth):
                 if rms > threshold:
                     comp_gain[i] = 1.0 / (1.0 + (compression_ratio - 1.0) * 
                                          ((rms - threshold) / (1.0 - threshold)))
-            
+
             # Apply compression (repeat gain array to match signal length)
             frames = librosa.frames_to_samples(np.arange(len(comp_gain)), hop_length=512)
-            comp_curve = np.interp(np.arange(len(y)), frames, comp_gain)
+            if len(comp_gain) < 2:
+                comp_curve = np.ones(len(y)) * (comp_gain[0] if len(comp_gain) == 1 else 1.0)
+            else:
+                comp_curve = np.interp(np.arange(len(y)), frames, comp_gain)
             y = y * comp_curve
         
         # Apply reverb (echo-based simulation)
@@ -279,16 +308,20 @@ def apply_audio_effects(audio_path, reverb=0.2, eq_high=0.0, compression_ratio=1
         # Apply high-shelf EQ (simplified)
         if eq_high != 0.0:
             # High-pass/high-shelf approximation using high-frequency emphasis
-            high_freq = sr // 2 - 2000  # Start EQ at 2kHz from Nyquist
-            
-            # Create high-pass filter
-            from scipy.signal import butter, sosfilt
-            sos = butter(2, high_freq / (sr / 2), btype='high', output='sos')
-            y_high = sosfilt(sos, y)
-            
-            # Mix in high-shelf amount
-            blend = (eq_high + 1.0) / 2.0  # Convert -1..1 to 0..1
-            y = y * (1 - abs(eq_high) * 0.3) + y_high * (abs(eq_high) * 0.3)
+            try:
+                cutoff_hz = max(20.0, (sr / 2.0) - 2000.0)
+                nyq = sr / 2.0
+                normalized_cutoff = max(0.001, min(cutoff_hz / nyq, 0.999))
+
+                from scipy.signal import butter, sosfilt
+                sos = butter(2, normalized_cutoff, btype='high', output='sos')
+                y_high = sosfilt(sos, y)
+
+                strength = min(abs(eq_high), 1.0) * 0.3
+                y = y * (1 - strength) + y_high * strength
+            except Exception:
+                # If filter fails for any reason, skip EQ
+                pass
         
         # Normalize to prevent clipping
         max_val = np.abs(y).max()
