@@ -15,12 +15,24 @@ import soundfile as sf
 
 def note_to_frequency(note, octave=4):
     """Convert note name to frequency in Hz"""
-    notes = {'C': 0, 'C#': 1, 'D': 2, 'D#': 3, 'E': 4, 'F': 5, 
+    # Normalize common flat names to their sharp equivalents
+    enharmonic = {
+        'Bb': 'A#', 'Cb': 'B', 'Db': 'C#', 'Eb': 'D#', 'Fb': 'E', 'Gb': 'F#', 'Ab': 'G#',
+        'E#': 'F', 'B#': 'C'
+    }
+    if note in enharmonic:
+        note = enharmonic[note]
+
+    notes = {'C': 0, 'C#': 1, 'D': 2, 'D#': 3, 'E': 4, 'F': 5,
              'F#': 6, 'G': 7, 'G#': 8, 'A': 9, 'A#': 10, 'B': 11}
+
+    # If note is still unknown, default to C
     if note not in notes:
         note = 'C'
-    semitones = notes[note] + (octave - 4) * 12
-    return 440 * (2 ** (semitones / 12.0))
+
+    # Calculate semitone offset relative to A4 (440 Hz)
+    semitone_offset = notes[note] - notes['A'] + (octave - 4) * 12
+    return 440 * (2 ** (semitone_offset / 12.0))
 
 
 def generate_sine_note(frequency, duration, sr=22050, amplitude=0.3):
@@ -136,12 +148,9 @@ def generate_bass_line(melody_notes, tempo, duration, key):
     samples_per_beat = int(beat_duration * sr)
     
     for i, note in enumerate(melody_notes):
-        # Bass is 1-2 octaves lower
-        if '#' in note:
-            freq = note_to_frequency(note, octave=2) * 0.5
-        else:
-            freq = note_to_frequency(note, octave=2)
-        
+        # Bass is lower (use octave 2) for all notes; enharmonic handled in note_to_frequency
+        freq = note_to_frequency(note, octave=2)
+
         start = (i * 2) * samples_per_beat
         if start < len(bass):
             note_audio = generate_sine_note(freq, 0.5, sr, amplitude=0.2)
@@ -162,12 +171,15 @@ def generate_synth_pad(duration, sr=22050, amplitude=0.15):
     for freq in freqs:
         pad += 0.25 * np.sin(2 * np.pi * freq * t)
     
-    # Add envelope
-    envelope = np.linspace(0, 1, int(0.5 * sr))
-    envelope = np.concatenate([envelope, np.ones(len(t) - len(envelope))])
-    if len(envelope) > len(t):
-        envelope = envelope[:len(t)]
-    
+    # Add envelope (handle short durations safely)
+    total_len = len(t)
+    fade_len = min(int(0.5 * sr), total_len)
+    envelope = np.ones(total_len)
+    if fade_len > 0:
+        # ramp up over fade_len samples
+        ramp = np.linspace(0, 1, fade_len)
+        envelope[:fade_len] = ramp
+
     return pad * envelope * amplitude
 
 
@@ -255,11 +267,62 @@ def main():
     
     try:
         if command == 'generate' and len(sys.argv) > 2:
-            lyrics = sys.argv[2]
-            genre = sys.argv[3] if len(sys.argv) > 3 else 'pop'
-            tempo = int(sys.argv[4]) if len(sys.argv) > 4 else 120
-            key = sys.argv[5] if len(sys.argv) > 5 else 'C major'
-            
+            # Support multi-word lyrics and optional trailing args: [genre] [tempo] [key]
+            args = sys.argv[2:]
+            # Defaults
+            genre = 'pop'
+            tempo = 120
+            key = 'C major'
+
+            # Known keys (mirror of key_to_notes mapping)
+            known_keys = {
+                'C major', 'G major', 'D major', 'A major', 'E major', 'B major', 'F# major', 'C# major',
+                'F major', 'Bb major', 'Eb major', 'Ab major', 'Db major', 'Gb major', 'Cb major',
+                'A minor', 'E minor', 'B minor'
+            }
+            # Known genres
+            known_genres = {'pop', 'rock', 'edm'}
+
+            # Parse optional trailing params from the end. Iterate until no more
+            args_copy = args[:]
+            changed = True
+            # Loop to allow params in any order at the end (e.g., genre tempo key)
+            while changed and args_copy:
+                changed = False
+                # Tempo: last token is integer
+                if args_copy and args_copy[-1].isdigit():
+                    try:
+                        tempo = int(args_copy.pop())
+                        changed = True
+                    except ValueError:
+                        pass
+
+                if not args_copy:
+                    break
+
+                # Key: either last token is a full key (may be quoted as one token),
+                # or last two tokens form a known key (e.g., ['C', 'major']).
+                if len(args_copy) >= 2 and ' '.join(args_copy[-2:]) in known_keys:
+                    key = ' '.join(args_copy[-2:])
+                    args_copy = args_copy[:-2]
+                    changed = True
+                elif args_copy and args_copy[-1] in known_keys:
+                    key = args_copy.pop()
+                    changed = True
+
+                if not args_copy:
+                    break
+
+                # Genre: last token is a known genre
+                if args_copy and args_copy[-1].lower() in known_genres:
+                    genre = args_copy.pop().lower()
+                    changed = True
+
+            lyrics = ' '.join(args_copy).strip()
+            if not lyrics:
+                print(json.dumps({'error': 'No lyrics provided', 'message': 'Provide lyrics to generate'}))
+                sys.exit(1)
+
             result = compose_from_lyrics(lyrics, genre, tempo, key)
             
             if result['success']:
