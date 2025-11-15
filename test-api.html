@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Test</title>
+</head>
+<body>
+    <h1>Song Generation Test</h1>
+    <button onclick="testAPI()">Test Song Generation</button>
+    <div id="status"></div>
+    <div id="error" style="color: red;"></div>
+    <div id="success" style="color: green;"></div>
+    <audio id="player" controls style="display:none;"></audio>
+    
+    <script>
+        async function testAPI() {
+            const status = document.getElementById('status');
+            const error = document.getElementById('error');
+            const success = document.getElementById('success');
+            const player = document.getElementById('player');
+            
+            status.textContent = 'Testing...';
+            error.textContent = '';
+            success.textContent = '';
+            
+            try {
+                console.log('Fetching from http://localhost:3000/api/compose-song');
+                
+                const response = await fetch('http://localhost:3000/api/compose-song', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        lyrics: 'Test lyrics',
+                        genre: 'pop',
+                        tempo: 120,
+                        key: 'C major'
+                    })
+                });
+                
+                console.log('Response status:', response.status);
+                console.log('Response ok:', response.ok);
+                
+                if (!response.ok) {
+                    const err = await response.text();
+                    throw new Error(`Server error: ${response.status} - ${err}`);
+                }
+                
+                const data = await response.json();
+                console.log('Response data keys:', Object.keys(data));
+                console.log('Audio size:', data.audio ? data.audio.length : 'no audio');
+                
+                if (data.audio) {
+                    // Convert base64 to blob
+                    const binaryString = atob(data.audio);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for(let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    const audioBlob = new Blob([bytes], { type: 'audio/wav' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    
+                    player.src = audioUrl;
+                    player.style.display = 'block';
+                    
+                    success.textContent = `Success! Audio generated: ${data.duration}s at ${data.sampleRate}Hz`;
+                    status.textContent = 'Complete';
+                } else {
+                    error.textContent = 'No audio in response';
+                }
+                
+            } catch (err) {
+                console.error('Error:', err);
+                error.textContent = 'Error: ' + err.message;
+                status.textContent = 'Failed';
+            }
+        }
+    </script>
+</body>
+</html>

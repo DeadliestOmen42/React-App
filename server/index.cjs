@@ -394,8 +394,12 @@ app.post('/api/compose-song', async (req, res) => {
       return res.status(400).json({ error: 'Lyrics required' });
     }
 
-    // Call Python song synthesizer
-    const pythonScriptPath = path.join(__dirname, '..', 'audio-processor', 'song_synthesizer.py');
+    // Try MusicGen first, fallback to simple synthesizer
+    const musicgenPath = path.join(__dirname, '..', 'audio-processor', 'musicgen_generator.py');
+    const fallbackPath = path.join(__dirname, '..', 'audio-processor', 'song_synthesizer.py');
+    
+    // Always start with MusicGen attempt (it will handle dependency checking)
+    const pythonScriptPath = musicgenPath;
     
     return new Promise((resolve) => {
       const python = spawn('python3', [
@@ -471,18 +475,72 @@ app.post('/api/compose-song', async (req, res) => {
               metadata: result.metadata,
               sampleRate: result.sample_rate,
               duration: result.duration,
+              model: 'MusicGen (AI)',
               composition: {
                 lyrics,
                 genre,
                 tempo,
                 key,
-                structure: result.metadata.structure,
-                instruments: ['Vocals', 'Drums', 'Bass', 'Synth Pad'],
+                structure: result.metadata?.structure || ['Intro', 'Verse', 'Chorus', 'Outro'],
+                instruments: result.metadata?.instruments || ['Vocals', 'Drums', 'Bass', 'Synth Pad'],
                 estimatedDuration: result.duration
               }
             });
           } else {
-            res.status(500).json({ error: result.error || 'Song synthesis failed', stderr: stderrData });
+            // Check if it's a missing dependencies error - try fallback
+            if (result.error && result.missing_packages) {
+              console.log('MusicGen dependencies missing, trying fallback synthesizer...');
+              
+              // Retry with fallback synthesizer
+              const fallbackPython = spawn('python3', [fallbackPath, 'generate', lyrics, genre, String(tempo), key]);
+              let fallbackStdout = '';
+              let fallbackStderr = '';
+              
+              fallbackPython.stdout.on('data', (data) => { fallbackStdout += data.toString(); });
+              fallbackPython.stderr.on('data', (data) => { fallbackStderr += data.toString(); });
+              
+              fallbackPython.on('close', (fallbackCode) => {
+                if (fallbackCode === 0) {
+                  try {
+                    const fallbackResult = JSON.parse(fallbackStdout);
+                    if (fallbackResult.success && fallbackResult.audio_path) {
+                      const audioData = fs.readFileSync(fallbackResult.audio_path);
+                      const audioBase64 = audioData.toString('base64');
+                      try { fs.unlinkSync(fallbackResult.audio_path); } catch(e) {}
+                      
+                      res.json({
+                        success: true,
+                        message: 'Song generated with fallback synthesizer',
+                        audio: audioBase64,
+                        metadata: fallbackResult.metadata,
+                        sampleRate: fallbackResult.sample_rate,
+                        duration: fallbackResult.duration,
+                        model: 'Basic Synthesizer (fallback)',
+                        composition: {
+                          lyrics, genre, tempo, key,
+                          structure: fallbackResult.metadata?.structure || ['Intro', 'Verse', 'Chorus', 'Outro'],
+                          instruments: ['Vocals', 'Drums', 'Bass', 'Synth Pad'],
+                          estimatedDuration: fallbackResult.duration
+                        }
+                      });
+                    } else {
+                      res.status(500).json({ error: 'Both MusicGen and fallback failed' });
+                    }
+                  } catch (e) {
+                    res.status(500).json({ error: 'Fallback synthesis failed', details: e.message });
+                  }
+                } else {
+                  res.status(503).json({ 
+                    error: 'AI music generation not available',
+                    message: 'Install ML dependencies: ./setup-musicgen.sh',
+                    missing_packages: result.missing_packages,
+                    install_command: result.install_command
+                  });
+                }
+              });
+            } else {
+              res.status(500).json({ error: result.error || 'Song synthesis failed', stderr: stderrData });
+            }
           }
         } catch (parseErr) {
           console.error('Parse error:', parseErr);

@@ -178,7 +178,8 @@ export default function App(){
       setAudioFile(audioUrl);
       setShowSongEditor(true);
       setHistory(h => [{ type: 'composed', genre: songGenre, tempo: songTempo, key: songKey, time: Date.now() }, ...h]);
-      alert('🎵 Song generated successfully!\n\nYou can now:\n• Play and listen\n• Apply audio effects\n• Analyze and master\n• Download the track');
+      const modelInfo = data.model ? `\n\n🤖 Generated with: ${data.model}` : '';
+      alert(`🎵 Song generated successfully!${modelInfo}\n\nYou can now:\n• Play and listen\n• Apply audio effects\n• Analyze and master\n• Download the track`);
     } catch(err) {
       console.error('Song generation error:', err);
       let errorMsg = 'Song generation failed';
