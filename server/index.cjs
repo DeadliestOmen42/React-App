@@ -67,9 +67,37 @@ app.use((req, res, next) => {
 app.post('/api/generate-lyrics', async (req, res) => {
   try {
     const prompt = (req.body && req.body.prompt) ? req.body.prompt : 'Write a joyful pop chorus about sunrise.';
-    if(!OPENAI_KEY){
-      return res.status(500).json({ error: 'OPENAI_API_KEY not set on server. See README.' });
+    
+    // If no OpenAI key or invalid key, use fallback mock lyrics
+    if(!OPENAI_KEY || OPENAI_KEY === 'sk_test_dummy') {
+      console.log('Using mock lyrics (OpenAI key not configured or invalid)');
+      const mockLyrics = `[Verse 1]
+${prompt.slice(0, 50)}
+Walking down this road alone
+Trying to find my way back home
+Every step I take, I know
+That your love will guide me so
+
+[Chorus]
+We're dancing in the moonlight
+Feeling so alive tonight
+Hearts beating as one
+Until the morning sun
+
+[Verse 2]
+Through the highs and all the lows
+You're the one my heart still knows
+When the world feels cold and grey
+Your smile lights up my way
+
+[Chorus]
+We're dancing in the moonlight
+Feeling so alive tonight
+Hearts beating as one
+Until the morning sun`;
+      return res.json({ lyrics: mockLyrics, mock: true });
     }
+    
     // Calls OpenAI Chat Completions (gpt-4 or gpt-3.5-turbo)
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -88,7 +116,16 @@ app.post('/api/generate-lyrics', async (req, res) => {
     });
     if(!r.ok){
       const txt = await r.text();
-      return res.status(500).json({ error: 'OpenAI error', detail: txt });
+      console.error('OpenAI API error:', r.status, txt);
+      const mockLyrics = `[Verse 1]
+${prompt.slice(0, 50)}
+Walking down this road alone
+Trying to find my way back home
+
+[Chorus]
+We're dancing in the moonlight
+Feeling so alive tonight`;
+      return res.json({ lyrics: mockLyrics, mock: true });
     }
     const data = await r.json();
     const lyrics = data.choices && data.choices[0] && (data.choices[0].message?.content || data.choices[0].text) ? (data.choices[0].message?.content || data.choices[0].text) : null;

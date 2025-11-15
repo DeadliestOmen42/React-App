@@ -1,0 +1,10 @@
+{
+  "python.defaultInterpreterPath": "/home/codespace/.python/current/bin/python3",
+  "python.analysis.autoSearchPaths": true,
+  "python.analysis.extraPaths": [
+    "./audio-processor"
+  ],
+  "python.analysis.typeCheckingMode": "off",
+  "python-envs.defaultEnvManager": "ms-python.python:system",
+  "python-envs.pythonProjects": []
+}

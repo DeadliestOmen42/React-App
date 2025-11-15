@@ -1,12 +1,23 @@
 # Python Audio Processing Dependencies
 # Successfully tested with Python 3.12
 
+# Core audio processing
 librosa==0.10.0          # Audio analysis & HPSS stem separation
 numpy==1.26.4            # Numerical computing
 scipy==1.11.2            # Signal processing (filters, etc.)
 soundfile==0.12.1        # WAV file I/O
-pedalboard==0.8.5        # Audio effects (optional)
+pedalboard==0.8.5        # Audio effects & mastering
 numba>=0.57.0            # JIT compilation for librosa
+
+# Advanced audio processing
+demucs                   # State-of-the-art ML stem separation (Meta AI)
+torch                    # PyTorch for ML models
+torchaudio              # Audio processing for PyTorch
+
+# Mastering & processing
+pyloudnorm              # Loudness normalization
+pydub                   # Audio manipulation
 
 # Installation:
 # pip install -r requirements.txt
+# Note: For SoX support, run: sudo apt-get install sox libsox-fmt-all
